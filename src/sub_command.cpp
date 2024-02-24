@@ -258,7 +258,7 @@ void build_message(char* &buffer, size_t& file_size, string file_name){
 	fclose(fp);
 }
 
-void build_hashes(char* &hash_info_buffer, uint64_t* hash_buffer, size_t& hash_number, string file_name){
+void build_hashes(char* &hash_info_buffer, uint64_t* &hash_buffer, size_t& hash_number, string file_name){
 	size_t file_size = get_file_size(file_name);
 	hash_info_buffer = new char[13]; // sizeof(int+int+bool+int) = 13
 	FILE * fp = fopen(file_name.c_str(), "r");
