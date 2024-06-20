@@ -255,15 +255,31 @@ void build_message(char* &buffer, size_t& file_size, string file_name){
 	assert(fp != NULL);
 	size_t read_length = fread(buffer, sizeof(char), file_size, fp);
 	assert(read_length == file_size);
+	fclose(fp);
 }
 
-void format_sketches(char* info_buffer, size_t info_size, char* hash_buffer, size_t hash_size, string folder_path, vector<SketchInfo>& sketches, bool sketch_by_file, int threads){
+void build_hashes(char* &hash_info_buffer, uint64_t* &hash_buffer, size_t& hash_number, string file_name){
+	size_t file_size = get_file_size(file_name);
+	hash_info_buffer = new char[13]; // sizeof(int+int+bool+int) = 13
+	FILE * fp = fopen(file_name.c_str(), "r");
+	assert(fp != NULL);
+	size_t info_length = fread(hash_info_buffer, sizeof(char), 13, fp);
+	assert(info_length == 13);
+	hash_number = (file_size-13)/8;
+	hash_buffer = new uint64_t[hash_number];
+	size_t read_number = fread(hash_buffer, sizeof(uint64_t), hash_number, fp);
+	assert(read_number == hash_number);
+	fclose(fp);
+}
+
+void format_sketches(char* info_buffer, size_t info_size, char * hash_info_buffer, uint64_t * hash_buffer, size_t hash_number, string folder_path, vector<SketchInfo>& sketches, bool sketch_by_file, int threads){
 	string info_file = folder_path + '/' + "info.sketch";
 	string hash_file = folder_path + '/' + "hash.sketch";
 	FILE* fp_info = fopen(info_file.c_str(), "w");
 	FILE* fp_hash = fopen(hash_file.c_str(), "w");
 	fwrite(info_buffer, sizeof(char), info_size, fp_info);
-	fwrite(hash_buffer, sizeof(char), hash_size, fp_hash);
+	fwrite(hash_info_buffer, sizeof(char), 13, fp_hash);
+	fwrite(hash_buffer, sizeof(uint64_t), hash_number, fp_hash);
 	fclose(fp_info);
 	fclose(fp_hash);
 	int sketch_func_id;
@@ -290,37 +306,42 @@ void clust_from_genomes(int my_rank, int comm_sz, string inputFile, string outpu
 
 	compute_sketches(my_rank, sketches, inputFile, folder_path, sketchByFile, minLen, kmerSize, sketchSize, sketchFunc, isContainment, containCompress, isSave, threads);
 	size_t* info_size_arr = new size_t[comm_sz];
-	size_t* hash_size_arr = new size_t[comm_sz];
+	size_t* hash_number_arr = new size_t[comm_sz];
 	string info_file = folder_path + '/' + "info.sketch";
 	string hash_file = folder_path + '/' + "hash.sketch";
 	char * info_buffer;
-	char * hash_buffer;
-	size_t info_size, hash_size;
+	char * hash_info_buffer;
+	uint64_t * hash_buffer;
+	size_t info_size, hash_number;
 	build_message(info_buffer, info_size, info_file);
-	build_message(hash_buffer, hash_size, hash_file);
+	//build_message(hash_buffer, hash_size, hash_file);
+	build_hashes(hash_info_buffer, hash_buffer, hash_number, hash_file);
 	cerr << "=====================finished the build_message " << my_rank << endl;
 	info_size_arr[my_rank] = info_size;
-	hash_size_arr[my_rank] = hash_size;
+	hash_number_arr[my_rank] = hash_number;
 	if(my_rank != 0){
 		//MPI_Send(info_buffer, info_size, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 		//MPI_Send(hash_buffer, hash_size, MPI_CHAR, 0, 1, MPI_COMM_WORLD);
 		MPI_Send(&info_size, 1, MPI_UNSIGNED_LONG, 0, my_rank, MPI_COMM_WORLD);
-		MPI_Send(&hash_size, 1, MPI_UNSIGNED_LONG, 0, my_rank+comm_sz, MPI_COMM_WORLD);
+		MPI_Send(&hash_number, 1, MPI_UNSIGNED_LONG, 0, my_rank+comm_sz, MPI_COMM_WORLD);
 		MPI_Send(info_buffer, info_size, MPI_CHAR, 0, my_rank+comm_sz*2, MPI_COMM_WORLD);
-		MPI_Send(hash_buffer, hash_size, MPI_CHAR, 0, my_rank+comm_sz*3, MPI_COMM_WORLD);
+		MPI_Send(hash_info_buffer, 13, MPI_CHAR, 0, my_rank+comm_sz*3, MPI_COMM_WORLD);
+		MPI_Send(hash_buffer, hash_number, MPI_UNSIGNED_LONG, 0, my_rank+comm_sz*4, MPI_COMM_WORLD);
 
-		size_t sum_info_size, sum_hash_size;
+		size_t sum_info_size, sum_hash_number;
 		MPI_Recv(&sum_info_size, 1, MPI_UNSIGNED_LONG, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Recv(&sum_hash_size, 1, MPI_UNSIGNED_LONG, 0, 0+comm_sz, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(&sum_hash_number, 1, MPI_UNSIGNED_LONG, 0, 0+comm_sz, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		char * sum_info_buffer = new char[sum_info_size];
-		char * sum_hash_buffer = new char[sum_hash_size];
+		char * sum_hash_info_buffer = new char[13];
+		uint64_t * sum_hash_buffer = new uint64_t[sum_hash_number];
 		MPI_Recv(sum_info_buffer, sum_info_size, MPI_CHAR, 0, 0+comm_sz*2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-		MPI_Recv(sum_hash_buffer, sum_hash_size, MPI_CHAR, 0, 0+comm_sz*3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(sum_hash_info_buffer, 13, MPI_CHAR, 0, 0+comm_sz*3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		MPI_Recv(sum_hash_buffer, sum_hash_number, MPI_UNSIGNED_LONG, 0, 0+comm_sz*4, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		string sum_folder = folder_path + '_' + "sum_" + to_string(my_rank);
 		string cmd1 = "mkdir -p " + sum_folder;
 		system(cmd1.c_str());
 		vector<SketchInfo>().swap(sketches);
-		format_sketches(sum_info_buffer, sum_info_size, sum_hash_buffer, sum_hash_size, sum_folder, sketches, sketchByFile, threads);
+		format_sketches(sum_info_buffer, sum_info_size, sum_hash_info_buffer, sum_hash_buffer, sum_hash_number, sum_folder, sketches, sketchByFile, threads);
 	}
 	else{
 		string tmp_recv_folder_path = folder_path + '_' + to_string(my_rank);
@@ -328,14 +349,16 @@ void clust_from_genomes(int my_rank, int comm_sz, string inputFile, string outpu
 		system(cmd0.c_str());
 		for(int id = 1; id < comm_sz; id++){
 			MPI_Recv(&info_size_arr[id], 1, MPI_UNSIGNED_LONG, id, id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			MPI_Recv(&hash_size_arr[id], 1, MPI_UNSIGNED_LONG, id, id+comm_sz, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			MPI_Recv(&hash_number_arr[id], 1, MPI_UNSIGNED_LONG, id, id+comm_sz, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			//cout << info_size_arr[id] << '\t' << hash_size_arr[id] << endl;
 			char * recv_info_buffer = new char[info_size_arr[id]];
-			char * recv_hash_buffer = new char[hash_size_arr[id]];
+			char * recv_hash_info_buffer = new char[13];
+			uint64_t * recv_hash_buffer = new uint64_t[hash_number_arr[id]];
 			MPI_Recv(recv_info_buffer, info_size_arr[id], MPI_CHAR, id, id+comm_sz*2, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			MPI_Recv(recv_hash_buffer, hash_size_arr[id], MPI_CHAR, id, id+comm_sz*3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			MPI_Recv(recv_hash_info_buffer, 13, MPI_CHAR, id, id+comm_sz*3, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			MPI_Recv(recv_hash_buffer, hash_number_arr[id], MPI_UNSIGNED_LONG, id, id+comm_sz*4, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			vector<SketchInfo> cur_sketches;
-			format_sketches(recv_info_buffer, info_size_arr[id], recv_hash_buffer, hash_size_arr[id], tmp_recv_folder_path, cur_sketches, sketchByFile, threads);
+			format_sketches(recv_info_buffer, info_size_arr[id], recv_hash_info_buffer, recv_hash_buffer, hash_number_arr[id], tmp_recv_folder_path, cur_sketches, sketchByFile, threads);
 			sketches.insert(sketches.end(), cur_sketches.begin(), cur_sketches.end());
 			vector<SketchInfo>().swap(cur_sketches);
 		}
@@ -346,15 +369,18 @@ void clust_from_genomes(int my_rank, int comm_sz, string inputFile, string outpu
 		string sum_info_file = sum_folder + '/' + "info.sketch";
 		string sum_hash_file = sum_folder + '/' + "hash.sketch";
 		char * sum_info_buffer;
-		char * sum_hash_buffer;
-		size_t sum_info_size, sum_hash_size;
+		char * sum_hash_info_buffer;
+		uint64_t * sum_hash_buffer;
+		size_t sum_info_size, sum_hash_number;
 		build_message(sum_info_buffer, sum_info_size, sum_info_file);
-		build_message(sum_hash_buffer, sum_hash_size, sum_hash_file);
+		//build_message(sum_hash_buffer, sum_hash_size, sum_hash_file);
+		build_hashes(sum_hash_info_buffer, sum_hash_buffer, sum_hash_number, sum_hash_file);
 		for(int id = 1; id < comm_sz; id++){
 			MPI_Send(&sum_info_size, 1, MPI_UNSIGNED_LONG, id, my_rank, MPI_COMM_WORLD);
-			MPI_Send(&sum_hash_size, 1, MPI_UNSIGNED_LONG, id, my_rank+comm_sz, MPI_COMM_WORLD);
+			MPI_Send(&sum_hash_number, 1, MPI_UNSIGNED_LONG, id, my_rank+comm_sz, MPI_COMM_WORLD);
 			MPI_Send(sum_info_buffer, sum_info_size, MPI_CHAR, id, my_rank+comm_sz*2, MPI_COMM_WORLD);
-			MPI_Send(sum_hash_buffer, sum_hash_size, MPI_CHAR, id, my_rank+comm_sz*3, MPI_COMM_WORLD);
+			MPI_Send(sum_hash_info_buffer, 13, MPI_CHAR, id, my_rank+comm_sz*3, MPI_COMM_WORLD);
+			MPI_Send(sum_hash_buffer, sum_hash_number, MPI_UNSIGNED_LONG, id, my_rank+comm_sz*4, MPI_COMM_WORLD);
 		}
 
 	}
